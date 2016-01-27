@@ -6174,9 +6174,21 @@
       "type": "boolean",
       "description": "Optional: Defaults to false (read/write). ReadOnly here will force the ReadOnly setting in VolumeMounts."
      },
+<<<<<<< HEAD:api/swagger-spec/extensions_v1beta1.json
      "options": {
       "type": "any",
       "description": "Optional: Extra command options if any."
+=======
+     "currentCPUUtilizationPercentage": {
+      "type": "integer",
+      "format": "int32",
+      "description": "current average CPU utilization over all pods, represented as a percentage of requested CPU, e.g. 70 means that an average pod is using now 70% of its requested CPU."
+     },
+     "previousCPUUtilizationPercentage": {
+      "type": "integer",
+      "format": "int32",
+      "description": "previous CPU utilization over all pods, represented as a percentage of requested CPU; this value is used for calculating the derivative of CPU utilization when using predictive auto-scaling."
+>>>>>>> Add PreviousCPUUtilizationPercentage field to HPA:api/swagger-spec/v1beta1.json
      }
     }
    },

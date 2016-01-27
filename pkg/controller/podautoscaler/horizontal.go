@@ -372,10 +372,11 @@ func (a *HorizontalController) updateCurrentReplicasInStatus(hpa *extensions.Hor
 
 func (a *HorizontalController) updateStatus(hpa *extensions.HorizontalPodAutoscaler, currentReplicas, desiredReplicas int, cpuCurrentUtilization *int, cmStatus string, rescale bool) error {
 	hpa.Status = extensions.HorizontalPodAutoscalerStatus{
-		CurrentReplicas:                 currentReplicas,
-		DesiredReplicas:                 desiredReplicas,
-		CurrentCPUUtilizationPercentage: cpuCurrentUtilization,
-		LastScaleTime:                   hpa.Status.LastScaleTime,
+		CurrentReplicas:                  currentReplicas,
+		DesiredReplicas:                  desiredReplicas,
+		CurrentCPUUtilizationPercentage:  cpuCurrentUtilization,
+		PreviousCPUUtilizationPercentage: hpa.Status.CurrentCPUUtilizationPercentage,
+		LastScaleTime:                    hpa.Status.LastScaleTime,
 	}
 	if cmStatus != "" {
 		hpa.Annotations[HpaCustomMetricsStatusAnnotationName] = cmStatus

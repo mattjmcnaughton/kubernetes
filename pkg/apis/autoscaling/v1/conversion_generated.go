@@ -181,56 +181,6 @@ func Convert_autoscaling_ScaleStatus_To_v1_ScaleStatus(in *autoscaling.ScaleStat
 	return autoConvert_autoscaling_ScaleStatus_To_v1_ScaleStatus(in, out, s)
 }
 
-func autoConvert_v1_HorizontalPodAutoscaler_To_extensions_HorizontalPodAutoscaler(in *HorizontalPodAutoscaler, out *extensions.HorizontalPodAutoscaler, s conversion.Scope) error {
-	if defaulting, found := s.DefaultingInterface(reflect.TypeOf(*in)); found {
-		defaulting.(func(*HorizontalPodAutoscaler))(in)
-	}
-	if err := api.Convert_unversioned_TypeMeta_To_unversioned_TypeMeta(&in.TypeMeta, &out.TypeMeta, s); err != nil {
-		return err
-	}
-	if err := Convert_v1_ObjectMeta_To_api_ObjectMeta(&in.ObjectMeta, &out.ObjectMeta, s); err != nil {
-		return err
-	}
-	if err := Convert_v1_HorizontalPodAutoscalerSpec_To_extensions_HorizontalPodAutoscalerSpec(&in.Spec, &out.Spec, s); err != nil {
-		return err
-	}
-	if err := Convert_v1_HorizontalPodAutoscalerStatus_To_extensions_HorizontalPodAutoscalerStatus(&in.Status, &out.Status, s); err != nil {
-		return err
-	}
-	return nil
-}
-
-func Convert_v1_HorizontalPodAutoscaler_To_extensions_HorizontalPodAutoscaler(in *HorizontalPodAutoscaler, out *extensions.HorizontalPodAutoscaler, s conversion.Scope) error {
-	return autoConvert_v1_HorizontalPodAutoscaler_To_extensions_HorizontalPodAutoscaler(in, out, s)
-}
-
-func autoConvert_v1_HorizontalPodAutoscalerList_To_extensions_HorizontalPodAutoscalerList(in *HorizontalPodAutoscalerList, out *extensions.HorizontalPodAutoscalerList, s conversion.Scope) error {
-	if defaulting, found := s.DefaultingInterface(reflect.TypeOf(*in)); found {
-		defaulting.(func(*HorizontalPodAutoscalerList))(in)
-	}
-	if err := api.Convert_unversioned_TypeMeta_To_unversioned_TypeMeta(&in.TypeMeta, &out.TypeMeta, s); err != nil {
-		return err
-	}
-	if err := api.Convert_unversioned_ListMeta_To_unversioned_ListMeta(&in.ListMeta, &out.ListMeta, s); err != nil {
-		return err
-	}
-	if in.Items != nil {
-		out.Items = make([]extensions.HorizontalPodAutoscaler, len(in.Items))
-		for i := range in.Items {
-			if err := Convert_v1_HorizontalPodAutoscaler_To_extensions_HorizontalPodAutoscaler(&in.Items[i], &out.Items[i], s); err != nil {
-				return err
-			}
-		}
-	} else {
-		out.Items = nil
-	}
-	return nil
-}
-
-func Convert_v1_HorizontalPodAutoscalerList_To_extensions_HorizontalPodAutoscalerList(in *HorizontalPodAutoscalerList, out *extensions.HorizontalPodAutoscalerList, s conversion.Scope) error {
-	return autoConvert_v1_HorizontalPodAutoscalerList_To_extensions_HorizontalPodAutoscalerList(in, out, s)
-}
-
 func autoConvert_v1_HorizontalPodAutoscalerSpec_To_extensions_HorizontalPodAutoscalerSpec(in *HorizontalPodAutoscalerSpec, out *extensions.HorizontalPodAutoscalerSpec, s conversion.Scope) error {
 	if defaulting, found := s.DefaultingInterface(reflect.TypeOf(*in)); found {
 		defaulting.(func(*HorizontalPodAutoscalerSpec))(in)
@@ -245,40 +195,6 @@ func autoConvert_v1_HorizontalPodAutoscalerSpec_To_extensions_HorizontalPodAutos
 	out.MaxReplicas = int(in.MaxReplicas)
 	// in.TargetCPUUtilizationPercentage has no peer in out
 	return nil
-}
-
-func autoConvert_v1_HorizontalPodAutoscalerStatus_To_extensions_HorizontalPodAutoscalerStatus(in *HorizontalPodAutoscalerStatus, out *extensions.HorizontalPodAutoscalerStatus, s conversion.Scope) error {
-	if defaulting, found := s.DefaultingInterface(reflect.TypeOf(*in)); found {
-		defaulting.(func(*HorizontalPodAutoscalerStatus))(in)
-	}
-	if in.ObservedGeneration != nil {
-		out.ObservedGeneration = new(int64)
-		*out.ObservedGeneration = *in.ObservedGeneration
-	} else {
-		out.ObservedGeneration = nil
-	}
-	// unable to generate simple pointer conversion for unversioned.Time -> unversioned.Time
-	if in.LastScaleTime != nil {
-		out.LastScaleTime = new(unversioned.Time)
-		if err := api.Convert_unversioned_Time_To_unversioned_Time(in.LastScaleTime, out.LastScaleTime, s); err != nil {
-			return err
-		}
-	} else {
-		out.LastScaleTime = nil
-	}
-	out.CurrentReplicas = int(in.CurrentReplicas)
-	out.DesiredReplicas = int(in.DesiredReplicas)
-	if in.CurrentCPUUtilizationPercentage != nil {
-		out.CurrentCPUUtilizationPercentage = new(int)
-		*out.CurrentCPUUtilizationPercentage = int(*in.CurrentCPUUtilizationPercentage)
-	} else {
-		out.CurrentCPUUtilizationPercentage = nil
-	}
-	return nil
-}
-
-func Convert_v1_HorizontalPodAutoscalerStatus_To_extensions_HorizontalPodAutoscalerStatus(in *HorizontalPodAutoscalerStatus, out *extensions.HorizontalPodAutoscalerStatus, s conversion.Scope) error {
-	return autoConvert_v1_HorizontalPodAutoscalerStatus_To_extensions_HorizontalPodAutoscalerStatus(in, out, s)
 }
 
 func autoConvert_v1_Scale_To_autoscaling_Scale(in *Scale, out *autoscaling.Scale, s conversion.Scope) error {
@@ -329,56 +245,6 @@ func Convert_v1_ScaleStatus_To_autoscaling_ScaleStatus(in *ScaleStatus, out *aut
 	return autoConvert_v1_ScaleStatus_To_autoscaling_ScaleStatus(in, out, s)
 }
 
-func autoConvert_extensions_HorizontalPodAutoscaler_To_v1_HorizontalPodAutoscaler(in *extensions.HorizontalPodAutoscaler, out *HorizontalPodAutoscaler, s conversion.Scope) error {
-	if defaulting, found := s.DefaultingInterface(reflect.TypeOf(*in)); found {
-		defaulting.(func(*extensions.HorizontalPodAutoscaler))(in)
-	}
-	if err := api.Convert_unversioned_TypeMeta_To_unversioned_TypeMeta(&in.TypeMeta, &out.TypeMeta, s); err != nil {
-		return err
-	}
-	if err := Convert_api_ObjectMeta_To_v1_ObjectMeta(&in.ObjectMeta, &out.ObjectMeta, s); err != nil {
-		return err
-	}
-	if err := Convert_extensions_HorizontalPodAutoscalerSpec_To_v1_HorizontalPodAutoscalerSpec(&in.Spec, &out.Spec, s); err != nil {
-		return err
-	}
-	if err := Convert_extensions_HorizontalPodAutoscalerStatus_To_v1_HorizontalPodAutoscalerStatus(&in.Status, &out.Status, s); err != nil {
-		return err
-	}
-	return nil
-}
-
-func Convert_extensions_HorizontalPodAutoscaler_To_v1_HorizontalPodAutoscaler(in *extensions.HorizontalPodAutoscaler, out *HorizontalPodAutoscaler, s conversion.Scope) error {
-	return autoConvert_extensions_HorizontalPodAutoscaler_To_v1_HorizontalPodAutoscaler(in, out, s)
-}
-
-func autoConvert_extensions_HorizontalPodAutoscalerList_To_v1_HorizontalPodAutoscalerList(in *extensions.HorizontalPodAutoscalerList, out *HorizontalPodAutoscalerList, s conversion.Scope) error {
-	if defaulting, found := s.DefaultingInterface(reflect.TypeOf(*in)); found {
-		defaulting.(func(*extensions.HorizontalPodAutoscalerList))(in)
-	}
-	if err := api.Convert_unversioned_TypeMeta_To_unversioned_TypeMeta(&in.TypeMeta, &out.TypeMeta, s); err != nil {
-		return err
-	}
-	if err := api.Convert_unversioned_ListMeta_To_unversioned_ListMeta(&in.ListMeta, &out.ListMeta, s); err != nil {
-		return err
-	}
-	if in.Items != nil {
-		out.Items = make([]HorizontalPodAutoscaler, len(in.Items))
-		for i := range in.Items {
-			if err := Convert_extensions_HorizontalPodAutoscaler_To_v1_HorizontalPodAutoscaler(&in.Items[i], &out.Items[i], s); err != nil {
-				return err
-			}
-		}
-	} else {
-		out.Items = nil
-	}
-	return nil
-}
-
-func Convert_extensions_HorizontalPodAutoscalerList_To_v1_HorizontalPodAutoscalerList(in *extensions.HorizontalPodAutoscalerList, out *HorizontalPodAutoscalerList, s conversion.Scope) error {
-	return autoConvert_extensions_HorizontalPodAutoscalerList_To_v1_HorizontalPodAutoscalerList(in, out, s)
-}
-
 func autoConvert_extensions_HorizontalPodAutoscalerSpec_To_v1_HorizontalPodAutoscalerSpec(in *extensions.HorizontalPodAutoscalerSpec, out *HorizontalPodAutoscalerSpec, s conversion.Scope) error {
 	if defaulting, found := s.DefaultingInterface(reflect.TypeOf(*in)); found {
 		defaulting.(func(*extensions.HorizontalPodAutoscalerSpec))(in)
@@ -395,54 +261,14 @@ func autoConvert_extensions_HorizontalPodAutoscalerSpec_To_v1_HorizontalPodAutos
 	return nil
 }
 
-func autoConvert_extensions_HorizontalPodAutoscalerStatus_To_v1_HorizontalPodAutoscalerStatus(in *extensions.HorizontalPodAutoscalerStatus, out *HorizontalPodAutoscalerStatus, s conversion.Scope) error {
-	if defaulting, found := s.DefaultingInterface(reflect.TypeOf(*in)); found {
-		defaulting.(func(*extensions.HorizontalPodAutoscalerStatus))(in)
-	}
-	if in.ObservedGeneration != nil {
-		out.ObservedGeneration = new(int64)
-		*out.ObservedGeneration = *in.ObservedGeneration
-	} else {
-		out.ObservedGeneration = nil
-	}
-	// unable to generate simple pointer conversion for unversioned.Time -> unversioned.Time
-	if in.LastScaleTime != nil {
-		out.LastScaleTime = new(unversioned.Time)
-		if err := api.Convert_unversioned_Time_To_unversioned_Time(in.LastScaleTime, out.LastScaleTime, s); err != nil {
-			return err
-		}
-	} else {
-		out.LastScaleTime = nil
-	}
-	out.CurrentReplicas = int32(in.CurrentReplicas)
-	out.DesiredReplicas = int32(in.DesiredReplicas)
-	if in.CurrentCPUUtilizationPercentage != nil {
-		out.CurrentCPUUtilizationPercentage = new(int32)
-		*out.CurrentCPUUtilizationPercentage = int32(*in.CurrentCPUUtilizationPercentage)
-	} else {
-		out.CurrentCPUUtilizationPercentage = nil
-	}
-	return nil
-}
-
-func Convert_extensions_HorizontalPodAutoscalerStatus_To_v1_HorizontalPodAutoscalerStatus(in *extensions.HorizontalPodAutoscalerStatus, out *HorizontalPodAutoscalerStatus, s conversion.Scope) error {
-	return autoConvert_extensions_HorizontalPodAutoscalerStatus_To_v1_HorizontalPodAutoscalerStatus(in, out, s)
-}
-
 func init() {
 	err := api.Scheme.AddGeneratedConversionFuncs(
 		autoConvert_api_ObjectMeta_To_v1_ObjectMeta,
 		autoConvert_autoscaling_ScaleSpec_To_v1_ScaleSpec,
 		autoConvert_autoscaling_ScaleStatus_To_v1_ScaleStatus,
 		autoConvert_autoscaling_Scale_To_v1_Scale,
-		autoConvert_extensions_HorizontalPodAutoscalerList_To_v1_HorizontalPodAutoscalerList,
 		autoConvert_extensions_HorizontalPodAutoscalerSpec_To_v1_HorizontalPodAutoscalerSpec,
-		autoConvert_extensions_HorizontalPodAutoscalerStatus_To_v1_HorizontalPodAutoscalerStatus,
-		autoConvert_extensions_HorizontalPodAutoscaler_To_v1_HorizontalPodAutoscaler,
-		autoConvert_v1_HorizontalPodAutoscalerList_To_extensions_HorizontalPodAutoscalerList,
 		autoConvert_v1_HorizontalPodAutoscalerSpec_To_extensions_HorizontalPodAutoscalerSpec,
-		autoConvert_v1_HorizontalPodAutoscalerStatus_To_extensions_HorizontalPodAutoscalerStatus,
-		autoConvert_v1_HorizontalPodAutoscaler_To_extensions_HorizontalPodAutoscaler,
 		autoConvert_v1_ObjectMeta_To_api_ObjectMeta,
 		autoConvert_v1_ScaleSpec_To_autoscaling_ScaleSpec,
 		autoConvert_v1_ScaleStatus_To_autoscaling_ScaleStatus,

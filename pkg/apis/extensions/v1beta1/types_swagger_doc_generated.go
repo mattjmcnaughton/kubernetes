@@ -240,12 +240,13 @@ func (HorizontalPodAutoscalerSpec) SwaggerDoc() map[string]string {
 }
 
 var map_HorizontalPodAutoscalerStatus = map[string]string{
-	"":                                "current status of a horizontal pod autoscaler",
-	"observedGeneration":              "most recent generation observed by this autoscaler.",
-	"lastScaleTime":                   "last time the HorizontalPodAutoscaler scaled the number of pods; used by the autoscaler to control how often the number of pods is changed.",
-	"currentReplicas":                 "current number of replicas of pods managed by this autoscaler.",
-	"desiredReplicas":                 "desired number of replicas of pods managed by this autoscaler.",
-	"currentCPUUtilizationPercentage": "current average CPU utilization over all pods, represented as a percentage of requested CPU, e.g. 70 means that an average pod is using now 70% of its requested CPU.",
+	"":                                 "current status of a horizontal pod autoscaler",
+	"observedGeneration":               "most recent generation observed by this autoscaler.",
+	"lastScaleTime":                    "last time the HorizontalPodAutoscaler scaled the number of pods; used by the autoscaler to control how often the number of pods is changed.",
+	"currentReplicas":                  "current number of replicas of pods managed by this autoscaler.",
+	"desiredReplicas":                  "desired number of replicas of pods managed by this autoscaler.",
+	"currentCPUUtilizationPercentage":  "current average CPU utilization over all pods, represented as a percentage of requested CPU, e.g. 70 means that an average pod is using now 70% of its requested CPU.",
+	"previousCPUUtilizationPercentage": "previous CPU utilization over all pods, represented as a percentage of requested CPU; this value is used for calculating the derivative of CPU utilization when using predictive auto-scaling.",
 }
 
 func (HorizontalPodAutoscalerStatus) SwaggerDoc() map[string]string {

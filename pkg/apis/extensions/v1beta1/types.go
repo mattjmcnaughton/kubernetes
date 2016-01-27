@@ -139,6 +139,11 @@ type HorizontalPodAutoscalerStatus struct {
 	// current average CPU utilization over all pods, represented as a percentage of requested CPU,
 	// e.g. 70 means that an average pod is using now 70% of its requested CPU.
 	CurrentCPUUtilizationPercentage *int32 `json:"currentCPUUtilizationPercentage,omitempty"`
+
+	// previous CPU utilization over all pods, represented as a
+	// percentage of requested CPU; this value is used for calculating the
+	// derivative of CPU utilization when using predictive auto-scaling.
+	PreviousCPUUtilizationPercentage *int32 `json:"previousCPUUtilizationPercentage,omitempty"`
 }
 
 // +genclient=true

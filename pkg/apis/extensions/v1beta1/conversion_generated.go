@@ -3081,6 +3081,12 @@ func autoConvert_extensions_HorizontalPodAutoscalerStatus_To_v1beta1_HorizontalP
 	} else {
 		out.CurrentCPUUtilizationPercentage = nil
 	}
+	if in.PreviousCPUUtilizationPercentage != nil {
+		out.PreviousCPUUtilizationPercentage = new(int32)
+		*out.PreviousCPUUtilizationPercentage = int32(*in.PreviousCPUUtilizationPercentage)
+	} else {
+		out.PreviousCPUUtilizationPercentage = nil
+	}
 	return nil
 }
 
@@ -4247,6 +4253,12 @@ func autoConvert_v1beta1_HorizontalPodAutoscalerStatus_To_extensions_HorizontalP
 		*out.CurrentCPUUtilizationPercentage = int(*in.CurrentCPUUtilizationPercentage)
 	} else {
 		out.CurrentCPUUtilizationPercentage = nil
+	}
+	if in.PreviousCPUUtilizationPercentage != nil {
+		out.PreviousCPUUtilizationPercentage = new(int)
+		*out.PreviousCPUUtilizationPercentage = int(*in.PreviousCPUUtilizationPercentage)
+	} else {
+		out.PreviousCPUUtilizationPercentage = nil
 	}
 	return nil
 }

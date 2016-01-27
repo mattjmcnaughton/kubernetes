@@ -1308,6 +1308,12 @@ func deepCopy_v1beta1_HorizontalPodAutoscalerStatus(in HorizontalPodAutoscalerSt
 	} else {
 		out.CurrentCPUUtilizationPercentage = nil
 	}
+	if in.PreviousCPUUtilizationPercentage != nil {
+		out.PreviousCPUUtilizationPercentage = new(int32)
+		*out.PreviousCPUUtilizationPercentage = *in.PreviousCPUUtilizationPercentage
+	} else {
+		out.PreviousCPUUtilizationPercentage = nil
+	}
 	return nil
 }
 
