@@ -329,7 +329,7 @@ func (tc *testCase) verifyResults(t *testing.T) {
 func (tc *testCase) runTest(t *testing.T) {
 	testClient := tc.prepareTestClient(t)
 	metricsClient := metrics.NewHeapsterMetricsClient(testClient, metrics.DefaultHeapsterNamespace, metrics.DefaultHeapsterScheme, metrics.DefaultHeapsterService, metrics.DefaultHeapsterPort)
-	hpaController := NewHorizontalController(testClient.Core(), testClient.Extensions(), testClient.Extensions(), metricsClient, 0)
+	hpaController := NewHorizontalController(testClient.Core(), testClient.Extensions(), testClient.Extensions(), testClient.Core(), metricsClient, 0)
 	stop := make(chan struct{})
 	defer close(stop)
 	go hpaController.Run(stop)

@@ -52,6 +52,7 @@ const (
 type HorizontalController struct {
 	scaleNamespacer unversionedextensions.ScalesGetter
 	hpaNamespacer   unversionedextensions.HorizontalPodAutoscalersGetter
+	podNamespacer   unversionedcore.PodsGetter
 
 	metricsClient metrics.MetricsClient
 	eventRecorder record.EventRecorder
@@ -65,7 +66,7 @@ type HorizontalController struct {
 var downscaleForbiddenWindow = 5 * time.Minute
 var upscaleForbiddenWindow = 3 * time.Minute
 
-func NewHorizontalController(evtNamespacer unversionedcore.EventsGetter, scaleNamespacer unversionedextensions.ScalesGetter, hpaNamespacer unversionedextensions.HorizontalPodAutoscalersGetter, metricsClient metrics.MetricsClient, resyncPeriod time.Duration) *HorizontalController {
+func NewHorizontalController(evtNamespacer unversionedcore.EventsGetter, scaleNamespacer unversionedextensions.ScalesGetter, hpaNamespacer unversionedextensions.HorizontalPodAutoscalersGetter, podNamespacer unversionedcore.PodsGetter, metricsClient metrics.MetricsClient, resyncPeriod time.Duration) *HorizontalController {
 	broadcaster := record.NewBroadcaster()
 	broadcaster.StartRecordingToSink(&unversionedcore.EventSinkImpl{evtNamespacer.Events("")})
 	recorder := broadcaster.NewRecorder(api.EventSource{Component: "horizontal-pod-autoscaler"})
@@ -75,6 +76,7 @@ func NewHorizontalController(evtNamespacer unversionedcore.EventsGetter, scaleNa
 		eventRecorder:   recorder,
 		scaleNamespacer: scaleNamespacer,
 		hpaNamespacer:   hpaNamespacer,
+		podNamespacer:   podNamespacer,
 	}
 
 	controller.store, controller.controller = framework.NewInformer(
@@ -119,6 +121,17 @@ func (a *HorizontalController) Run(stopCh <-chan struct{}) {
 	defer utilruntime.HandleCrash()
 	glog.Infof("Starting HPA Controller")
 	go a.controller.Run(stopCh)
+
+	// Set a listener to track the `InitializationTime` of each pod created
+	// by each autoscaler. This go routine is run even if we are not
+	// currently using `predictive` autoscaling, so that the information is
+	// recorded should the user wish to run on predictive autoscaling later.
+	go func() {
+		if err := a.recordAllInitializationTimes(); err != nil {
+			glog.Errorf("Couldn't record initialization times for pods: %v", err)
+		}
+	}()
+
 	<-stopCh
 	glog.Infof("Shutting down HPA Controller")
 }
@@ -393,4 +406,136 @@ func (a *HorizontalController) updateStatus(hpa *extensions.HorizontalPodAutosca
 	}
 	glog.V(2).Infof("Successfully updated status for %s", hpa.Name)
 	return nil
+}
+
+// recordInitializationTime records the time it takes for each pod to
+// initialize (i.e. become ready to share computational work)
+// in `pod.ObjectMeta.Annotations`. This information is for when
+// predictive autoscaling is enabled. This method processes a single autoscaler,
+// so it must be called once with each autoscaler as an argument.
+func (a *HorizontalController) recordInitializationTimes(hpa extensions.HorizontalPodAutoscaler) error {
+	reference := fmt.Sprintf("%s/%s/%s", hpa.Spec.ScaleRef.Kind, hpa.Namespace, hpa.Spec.ScaleRef.Name)
+
+	scale, err := a.scaleNamespacer.Scales(hpa.Namespace).Get(hpa.Spec.ScaleRef.Kind, hpa.Spec.ScaleRef.Name)
+	if err != nil {
+		a.eventRecorder.Event(&hpa, api.EventTypeWarning, "FailedGetScale", err.Error())
+		return fmt.Errorf("failed to query scale subresource for %s: %v", reference, err)
+	}
+
+	// Translate the selector for all pods controller by this auto-scaler to
+	// a selector for watching a set of pods.
+	selector, err := unversioned.LabelSelectorAsSelector(scale.Status.Selector)
+	if err != nil {
+		errMsg := fmt.Sprintf("couldn't convert selector string to a corresponding selector object: %v", err)
+		a.eventRecorder.Event(&hpa, api.EventTypeWarning, "InvalidSelector", errMsg)
+	}
+
+	// Watch for all events on pods with the same `selector` as the
+	// `selector` of the hpa.
+	watcher, err := a.podNamespacer.Pods(hpa.Namespace).Watch(api.ListOptions{LabelSelector: selector})
+	if err != nil {
+		a.eventRecorder.Event(&hpa, api.EventTypeWarning, "FailedWatchAutoscaledPods", err.Error())
+		return fmt.Errorf("failed to watch autoscaled pods for %s: %v", reference, err)
+	}
+
+	// Process all events noted by the `watcher`.
+	for event := range watcher.ResultChan() {
+		// Pods that recently became ready will fire a `Modified` event,
+		// so we only process modified events.
+		if event.Type == watch.Modified {
+			modifiedPod := event.Object.(*api.Pod)
+
+			// If this pod has already had a value for
+			// InitializationTime recorded, then stop, as we don't
+			// to rewrite a new value if a pod goes starting ->
+			// ready -> failed -> restarting -> ready.
+			if _, alreadyRecorded := modifiedPod.ObjectMeta.Annotations["InitializationTime"]; alreadyRecorded {
+				break
+			}
+
+			// Check if the event was fired because the pod recently
+			// became ready.
+			for _, cond := range modifiedPod.Status.Conditions {
+				// If the pod is ready, record the delta between
+				// when the pod was ordered to be created and
+				// when it became ready.
+				if cond.Type == api.PodReady {
+					initTime := cond.LastTransitionTime.Time.Sub(modifiedPod.CreationTimestamp.Time)
+					modifiedPod.ObjectMeta.Annotations["InitializationTime"] = initTime.String()
+				}
+			}
+
+			// If the Event is not that the pod was modified, ignore
+			// it and wait for the next event.
+		}
+	}
+
+	return fmt.Errorf("Function listens for events forever, so it should never return.")
+}
+
+// computeAverageInitializationTime returns the average amount of time it takes
+// for a pod created by the autoscaler to initialize.
+func (a *HorizontalController) computeAverageInitializationTime(hpa extensions.HorizontalPodAutoscaler, scale *extensions.Scale) (int, error) {
+	// Translate the selector for all pods controller by this auto-scaler to
+	// a selector for watching a set of pods.
+	// @TODO Abstract all calls for selector to a single function call.
+	selector, err := unversioned.LabelSelectorAsSelector(scale.Status.Selector)
+	if err != nil {
+		errMsg := fmt.Sprintf("couldn't convert selector string to a corresponding selector object: %v", err)
+		a.eventRecorder.Event(&hpa, api.EventTypeWarning, "InvalidSelector", errMsg)
+	}
+
+	pods, err := a.podNamespacer.Pods(hpa.Namespace).List(api.ListOptions{LabelSelector: selector})
+
+	if err != nil {
+		return 0, fmt.Errorf("Failed to compute average initialization time for pods.")
+	}
+
+	totalInitializationTime := 0.0
+	for _, pod := range pods.Items {
+		initTimeRaw, found := pod.ObjectMeta.Annotations["InitializationTime"]
+		if found {
+			// Ignore error if parsing because don't want to end all
+			// processing because of a singular error.
+			initDur, _ := time.ParseDuration(initTimeRaw)
+
+			totalInitializationTime += initDur.Seconds()
+		}
+	}
+
+	// Check if for someone reason either no initialization times or no pods
+	// were processed.
+	if totalInitializationTime == 0.0 || len(pods.Items) == 0 {
+		return 0, fmt.Errorf("Failed to calculate the average initialization time of the pods...")
+	}
+
+	return int(totalInitializationTime / float64(len(pods.Items))), nil
+}
+
+// reconcileAllInitializationTimes launches listeners to track the
+// initialization times for all pods created by all of the different
+// autoscalers.
+func (a *HorizontalController) recordAllInitializationTimes() error {
+	list, err := a.getAllAutoscalers()
+
+	if err != nil {
+		return fmt.Errorf("Error listing all autoscalers: %v", err)
+	}
+
+	for _, hpa := range list.Items {
+		go func() {
+			err := a.recordInitializationTimes(hpa)
+			if err != nil {
+				glog.Warningf("Failed to record pod initialization time for %s: %v", hpa.Name, err)
+			}
+		}()
+	}
+
+	return nil
+}
+
+func (a *HorizontalController) getAllAutoscalers() (*extensions.HorizontalPodAutoscalerList, error) {
+	ns := api.NamespaceAll
+
+	return a.hpaNamespacer.HorizontalPodAutoscalers(ns).List(api.ListOptions{})
 }
