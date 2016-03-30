@@ -47,6 +47,10 @@ const (
 
 	HpaCustomMetricsTargetAnnotationName = "alpha/target.custom-metrics.podautoscaler.kubernetes.io"
 	HpaCustomMetricsStatusAnnotationName = "alpha/status.custom-metrics.podautoscaler.kubernetes.io"
+
+	// PredictiveAutoscalingAnnotationName must have a value of "true" in
+	// the annotations hash to enable predictive auto-scaling.
+	PredictiveAutoscalingAnnotationName = "predictive"
 )
 
 type HorizontalController struct {
@@ -391,6 +395,20 @@ func (a *HorizontalController) updateStatus(hpa *extensions.HorizontalPodAutosca
 		hpa.Status.LastScaleTime = &now
 	}
 
+	// If we're using predictive auto-scaling, we need to add this
+	// CurrentCPUUtilizationPercentage to a list we keep of
+	// PreviousCPUUTilizationPercentages so that we can make predictions.
+	if isPredictive(hpa) && cpuCurrentUtilization != nil {
+		err := a.recordCPUUtilization(hpa, *cpuCurrentUtilization)
+
+		// If there is an error, record it, but don't fail because we
+		// don't want to not scale just because we were unable to record
+		// cpu utilization.
+		if err != nil {
+			a.eventRecorder.Event(hpa, api.EventTypeWarning, "FailedRecordingPreviousCPU", err.Error())
+		}
+	}
+
 	_, err := a.hpaNamespacer.HorizontalPodAutoscalers(hpa.Namespace).UpdateStatus(hpa)
 	if err != nil {
 		a.eventRecorder.Event(hpa, api.EventTypeWarning, "FailedUpdateStatus", err.Error())
@@ -398,4 +416,82 @@ func (a *HorizontalController) updateStatus(hpa *extensions.HorizontalPodAutosca
 	}
 	glog.V(2).Infof("Successfully updated status for %s", hpa.Name)
 	return nil
+}
+
+// isPredictive is a helper function for checking if this auto-scaler is
+// functioning in predictive mode. Currently, this variable is set through
+// annotation.
+func isPredictive(hpa *extensions.HorizontalPodAutoscaler) bool {
+	if predAnn, found := hpa.Annotations[PredictiveAutoscalingAnnotationName]; found {
+		return predAnn == "true"
+	}
+
+	return false
+}
+
+// recordCPUUtilization is a helper function to update the annotations list that
+// the `hpa` keeps of previous CPU Utilizations and the times at which they
+// occured. We use this list to calculate a
+// line of best fit for the CPU utilization which we can use to predict future
+// CPU utilization. The most recent values appear at the end of the slice.
+// Because annotations is used for strings, we JSON marshal and unmarshal the
+// values as needed.
+func (a *HorizontalController) recordCPUUtilization(hpa *extensions.HorizontalPodAutoscaler, cpuCurrentUtilization int) error {
+	previousCPUAnnotationName := "PreviousCPUUtilizationPercentages"
+
+	var updatedUtils []map[string]int
+	observation := map[string]int{time.Now().String(): cpuCurrentUtilization}
+	prevJSONUtils, found := hpa.Annotations[previousCPUAnnotationName]
+
+	if !found {
+		updatedUtils = []map[string]int{observation}
+	} else {
+		var prevUtils []map[string]int
+		if err := json.Unmarshal([]byte(prevJSONUtils), &prevUtils); err != nil {
+			a.eventRecorder.Event(hpa, api.EventTypeWarning, "FailedRecordingCPUUtilization", err.Error())
+			return err
+		}
+
+		maxUtils := a.calculateMaxObservations(hpa)
+
+		if len(prevUtils) >= maxUtils {
+			newStart := (len(prevUtils) + 1) - maxUtils
+			prevUtils = prevUtils[newStart:]
+		}
+
+		updatedUtils = append(prevUtils, observation)
+	}
+
+	jsonUtils, err := json.Marshal(updatedUtils)
+
+	if err != nil {
+		a.eventRecorder.Event(hpa, api.EventTypeWarning, "FailedMarshalingUpdatedCPU", err.Error())
+		return err
+	} else {
+		writeToAnnotations(hpa, previousCPUAnnotationName, string(jsonUtils[:]))
+		return nil
+	}
+}
+
+// calculateMaxObservations indicates how many previous cpu utilization
+// observations we need to record, based on the understanding that we must
+// record in the past at least as long as we want to predict into the future.
+// @TODO Once the proper methods for calculating pod initialization time are
+// written, this method should return (PodInitTime / HPASyncDuration) * k, where
+// k is some constant representing how far in the past we want to record.
+func (a *HorizontalController) calculateMaxObservations(hpa *extensions.HorizontalPodAutoscaler) int {
+	// @TODO Update this so calculated using the algorithm described in the
+	// functions description, instead of just returning a static value.
+	return 10
+}
+
+// writeToAnnotations is a wrapper method for writing to `hpa.Annotations`. We
+// use this wrapper so that we don't have to check everytime whether
+// `hpa.Annotations` is not nil before trying to write to it.
+func writeToAnnotations(hpa *extensions.HorizontalPodAutoscaler, key string, value string) {
+	if hpa.Annotations == nil {
+		hpa.Annotations = make(map[string]string)
+	}
+
+	hpa.Annotations[key] = value
 }
