@@ -56,6 +56,7 @@ const (
 type HorizontalController struct {
 	scaleNamespacer unversionedextensions.ScalesGetter
 	hpaNamespacer   unversionedextensions.HorizontalPodAutoscalersGetter
+	podNamespacer   unversionedcore.PodsGetter
 
 	metricsClient metrics.MetricsClient
 	eventRecorder record.EventRecorder
@@ -106,7 +107,7 @@ func newInformer(controller *HorizontalController, resyncPeriod time.Duration) (
 	)
 }
 
-func NewHorizontalController(evtNamespacer unversionedcore.EventsGetter, scaleNamespacer unversionedextensions.ScalesGetter, hpaNamespacer unversionedextensions.HorizontalPodAutoscalersGetter, metricsClient metrics.MetricsClient, resyncPeriod time.Duration) *HorizontalController {
+func NewHorizontalController(evtNamespacer unversionedcore.EventsGetter, scaleNamespacer unversionedextensions.ScalesGetter, hpaNamespacer unversionedextensions.HorizontalPodAutoscalersGetter, podNamespacer unversionedcore.PodsGetter, metricsClient metrics.MetricsClient, resyncPeriod time.Duration) *HorizontalController {
 	broadcaster := record.NewBroadcaster()
 	broadcaster.StartRecordingToSink(&unversionedcore.EventSinkImpl{evtNamespacer.Events("")})
 	recorder := broadcaster.NewRecorder(api.EventSource{Component: "horizontal-pod-autoscaler"})
@@ -116,6 +117,7 @@ func NewHorizontalController(evtNamespacer unversionedcore.EventsGetter, scaleNa
 		eventRecorder:   recorder,
 		scaleNamespacer: scaleNamespacer,
 		hpaNamespacer:   hpaNamespacer,
+		podNamespacer:   podNamespacer,
 	}
 	store, frameworkController := newInformer(controller, resyncPeriod)
 	controller.store = store
@@ -439,10 +441,16 @@ func isPredictive(hpa *extensions.HorizontalPodAutoscaler) bool {
 func (a *HorizontalController) recordCPUUtilization(hpa *extensions.HorizontalPodAutoscaler, cpuCurrentUtilization int) error {
 	previousCPUAnnotationName := "PreviousCPUUtilizationPercentages"
 
-	var updatedUtils []map[string]int
-	observation := map[string]int{time.Now().String(): cpuCurrentUtilization}
+	jsonTime, err := time.Now().MarshalJSON()
+	if err != nil {
+		a.eventRecorder.Event(hpa, api.EventTypeWarning, "FailedMarshalingTime", err.Error())
+		return err
+	}
+
+	observation := map[string]int{string(jsonTime[:]): cpuCurrentUtilization}
 	prevJSONUtils, found := hpa.Annotations[previousCPUAnnotationName]
 
+	var updatedUtils []map[string]int
 	if !found {
 		updatedUtils = []map[string]int{observation}
 	} else {
@@ -452,11 +460,10 @@ func (a *HorizontalController) recordCPUUtilization(hpa *extensions.HorizontalPo
 			return err
 		}
 
-		maxUtils := a.calculateMaxObservations(hpa)
-
-		if len(prevUtils) >= maxUtils {
-			newStart := (len(prevUtils) + 1) - maxUtils
-			prevUtils = prevUtils[newStart:]
+		prevUtils, err := a.removeOldUtils(hpa, prevUtils)
+		if err != nil {
+			a.eventRecorder.Event(hpa, api.EventTypeWarning, "FailedRemovingOldUtils", err.Error())
+			return err
 		}
 
 		updatedUtils = append(prevUtils, observation)
@@ -468,30 +475,146 @@ func (a *HorizontalController) recordCPUUtilization(hpa *extensions.HorizontalPo
 		a.eventRecorder.Event(hpa, api.EventTypeWarning, "FailedMarshalingUpdatedCPU", err.Error())
 		return err
 	} else {
-		writeToAnnotations(hpa, previousCPUAnnotationName, string(jsonUtils[:]))
+		writeToHPAAnnotations(hpa, previousCPUAnnotationName, string(jsonUtils[:]))
 		return nil
 	}
 }
 
-// calculateMaxObservations indicates how many previous cpu utilization
-// observations we need to record, based on the understanding that we must
-// record in the past at least as long as we want to predict into the future.
-// @TODO Once the proper methods for calculating pod initialization time are
-// written, this method should return (PodInitTime / HPASyncDuration) * k, where
-// k is some constant representing how far in the past we want to record.
-func (a *HorizontalController) calculateMaxObservations(hpa *extensions.HorizontalPodAutoscaler) int {
-	// @TODO Update this so calculated using the algorithm described in the
-	// functions description, instead of just returning a static value.
-	return 10
+// removeOldUtils removes observations of previous CPU utilizations that are
+// beyond the range we wish to record. The range is `k * PodInitTime`, where k
+// is a constant indicating how many multiples of the AveragePodInitTime in the
+// past we want to record.
+func (a *HorizontalController) removeOldUtils(hpa *extensions.HorizontalPodAutoscaler, prevUtils []map[string]int) ([]map[string]int, error) {
+	k := 1.0
+
+	avgPodInitTime, err := a.averagePodInitilizationTime(hpa)
+	if err != nil {
+		a.eventRecorder.Event(hpa, api.EventTypeWarning, "FailedGettingPodInitTime", err.Error())
+		return nil, err
+	}
+
+	maxDistance := avgPodInitTime * k
+	firstToKeep := 0
+	stop := false
+	var t time.Time
+
+	for i, timeMap := range prevUtils {
+		if stop {
+			break
+		}
+
+		for key := range timeMap {
+			t.UnmarshalJSON([]byte(key))
+
+			// We add new observations to the end, so we are looking
+			// for the first observation within the range we want,
+			// and we are guaranteed that all after it will also be
+			// in the range.
+			if time.Since(t).Seconds() < maxDistance {
+				firstToKeep = i
+				stop = true
+			}
+		}
+	}
+
+	return prevUtils[firstToKeep:], nil
 }
 
-// writeToAnnotations is a wrapper method for writing to `hpa.Annotations`. We
-// use this wrapper so that we don't have to check everytime whether
-// `hpa.Annotations` is not nil before trying to write to it.
-func writeToAnnotations(hpa *extensions.HorizontalPodAutoscaler, key string, value string) {
+// writeToHPAAnnotations is a wrapper method for writing to `Annotations` of an
+// horizontal pod autoscaler including the check that `Annotations` is not nil
+// first.
+// @TODO This should be combined with `writeToPodAnnotations` so there is one
+// general method that both can call.
+func writeToHPAAnnotations(hpa *extensions.HorizontalPodAutoscaler, key string, value string) {
 	if hpa.Annotations == nil {
 		hpa.Annotations = make(map[string]string)
 	}
 
 	hpa.Annotations[key] = value
+}
+
+// writeToPodAnnotations is same as `writeToHPAAnnotations`, eventually they
+// should be combined.
+func writeToPodAnnotations(pod *api.Pod, key string, value string) {
+	if pod.Annotations == nil {
+		pod.Annotations = make(map[string]string)
+	}
+
+	pod.Annotations[key] = value
+}
+
+// averagePodInitilizationTime returns the average amount of seconds it took for
+// all pods related to `hpa` to become ready.
+func (a *HorizontalController) averagePodInitilizationTime(hpa *extensions.HorizontalPodAutoscaler) (float64, error) {
+	reference := fmt.Sprintf("%s/%s/%s", hpa.Spec.ScaleRef.Kind, hpa.Namespace, hpa.Spec.ScaleRef.Name)
+
+	scale, err := a.scaleNamespacer.Scales(hpa.Namespace).Get(hpa.Spec.ScaleRef.Kind, hpa.Spec.ScaleRef.Name)
+	if err != nil {
+		a.eventRecorder.Event(hpa, api.EventTypeWarning, "FailedGetScale", err.Error())
+		return 0.0, fmt.Errorf("Failed to query scale subresource for %s: %v", reference, err)
+	}
+
+	selector, err := unversioned.LabelSelectorAsSelector(scale.Status.Selector)
+	if err != nil {
+		errMsg := fmt.Sprintf("Couldn't convert selector string to a corresponding selector object: %v", err)
+
+		a.eventRecorder.Event(hpa, api.EventTypeWarning, "InvalidSelector", errMsg)
+		return 0.0, fmt.Errorf("%v", errMsg)
+	}
+
+	pods, err := a.podNamespacer.Pods(hpa.Namespace).List(api.ListOptions{LabelSelector: selector})
+	if err != nil {
+		a.eventRecorder.Event(hpa, api.EventTypeWarning, "FailedListPods", err.Error())
+		return 0.0, fmt.Errorf("Failed to list pods for %s: %v", reference, err)
+	}
+
+	totalInitializationTime := 0.0
+	readyPods := 0
+
+	for _, pod := range pods.Items {
+		initTimeForPod, err := a.podInitializationTime(hpa, pod)
+		if err != nil {
+			a.eventRecorder.Event(hpa, api.EventTypeWarning, "FailedInitTimeForPod", err.Error())
+		} else {
+			totalInitializationTime += initTimeForPod
+			readyPods += 1
+		}
+
+	}
+
+	if readyPods == 0 {
+		return 0.0, nil
+	}
+
+	return totalInitializationTime / float64(readyPods), nil
+}
+
+// podInitializationTime calculates for a single pod the amount of time it takes
+// to initialize that pod, either be reading in a previously recording time, or
+// calculating the time and then recording it. The calculation of the
+// initialization time is based on subtracting the time at which the pod
+// was created from the time at which the pod became ready.
+func (a *HorizontalController) podInitializationTime(hpa *extensions.HorizontalPodAutoscaler, pod api.Pod) (float64, error) {
+	podInitializationTimeAnnotationName := "InitializationTime"
+
+	// Only attempt to calculate if the pod is ready.
+	for _, cond := range pod.Status.Conditions {
+		if cond.Type == api.PodReady {
+			initTime, found := pod.Annotations[podInitializationTimeAnnotationName]
+			if !found {
+				initTime = cond.LastTransitionTime.Time.Sub(pod.CreationTimestamp.Time).String()
+				writeToPodAnnotations(&pod, podInitializationTimeAnnotationName, initTime)
+			}
+
+			initDuration, err := time.ParseDuration(initTime)
+			if err != nil {
+				a.eventRecorder.Event(hpa, api.EventTypeWarning, "FailedParsingPodInitTime", err.Error())
+				return 0.0, err
+			}
+
+			return initDuration.Seconds(), nil
+		}
+	}
+
+	return 0.0, fmt.Errorf("Pod is not ready.")
 }

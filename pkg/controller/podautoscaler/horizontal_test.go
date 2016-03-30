@@ -341,6 +341,7 @@ func (tc *testCase) runTest(t *testing.T) {
 		eventRecorder:   recorder,
 		scaleNamespacer: testClient.Extensions(),
 		hpaNamespacer:   testClient.Extensions(),
+		podNamespacer:   testClient.Core(),
 	}
 
 	store, frameworkController := newInformer(hpaController, time.Minute)
