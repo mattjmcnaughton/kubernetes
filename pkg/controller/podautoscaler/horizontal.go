@@ -22,6 +22,8 @@ import (
 	"math"
 	"time"
 
+	"github.com/montanaflynn/stats"
+
 	"github.com/golang/glog"
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/api/resource"
@@ -51,6 +53,11 @@ const (
 	// PredictiveAutoscalingAnnotationName must have a value of "true" in
 	// the annotations hash to enable predictive auto-scaling.
 	PredictiveAutoscalingAnnotationName = "predictive"
+
+	// PreviousCPUAnnotationName is the name in which we store a JSON map of
+	// previous CPU utilization observations and the time at which they
+	// occured.
+	PreviousCPUAnnotationName = "previousCPUUtilizations"
 )
 
 type HorizontalController struct {
@@ -162,6 +169,17 @@ func (a *HorizontalController) computeReplicasForCPUUtilization(hpa *extensions.
 	}
 
 	usageRatio := float64(*currentUtilization) / float64(targetUtilization)
+
+	if isPredictive(hpa) {
+		predictedUtilization, err := a.predictCPUUtilization(hpa, currentUtilization, timestamp)
+
+		if err != nil {
+			a.eventRecorder.Event(hpa, api.EventTypeWarning, "ErrorAutoscalingPredictively", err.Error())
+		} else {
+			usageRatio = *predictedUtilization / float64(targetUtilization)
+		}
+	}
+
 	if math.Abs(1.0-usageRatio) > tolerance {
 		return int(math.Ceil(usageRatio * float64(currentReplicas))), currentUtilization, timestamp, nil
 	} else {
@@ -439,8 +457,6 @@ func isPredictive(hpa *extensions.HorizontalPodAutoscaler) bool {
 // Because annotations is used for strings, we JSON marshal and unmarshal the
 // values as needed.
 func (a *HorizontalController) recordCPUUtilization(hpa *extensions.HorizontalPodAutoscaler, cpuCurrentUtilization int) error {
-	previousCPUAnnotationName := "PreviousCPUUtilizationPercentages"
-
 	jsonTime, err := time.Now().MarshalJSON()
 	if err != nil {
 		a.eventRecorder.Event(hpa, api.EventTypeWarning, "FailedMarshalingTime", err.Error())
@@ -448,7 +464,7 @@ func (a *HorizontalController) recordCPUUtilization(hpa *extensions.HorizontalPo
 	}
 
 	observation := map[string]int{string(jsonTime[:]): cpuCurrentUtilization}
-	prevJSONUtils, found := hpa.Annotations[previousCPUAnnotationName]
+	prevJSONUtils, found := hpa.Annotations[PreviousCPUAnnotationName]
 
 	var updatedUtils []map[string]int
 	if !found {
@@ -474,10 +490,10 @@ func (a *HorizontalController) recordCPUUtilization(hpa *extensions.HorizontalPo
 	if err != nil {
 		a.eventRecorder.Event(hpa, api.EventTypeWarning, "FailedMarshalingUpdatedCPU", err.Error())
 		return err
-	} else {
-		writeToHPAAnnotations(hpa, previousCPUAnnotationName, string(jsonUtils[:]))
-		return nil
 	}
+
+	writeToHPAAnnotations(hpa, PreviousCPUAnnotationName, string(jsonUtils[:]))
+	return nil
 }
 
 // removeOldUtils removes observations of previous CPU utilizations that are
@@ -577,7 +593,7 @@ func (a *HorizontalController) averagePodInitilizationTime(hpa *extensions.Horiz
 			a.eventRecorder.Event(hpa, api.EventTypeWarning, "FailedInitTimeForPod", err.Error())
 		} else {
 			totalInitializationTime += initTimeForPod
-			readyPods += 1
+			readyPods++
 		}
 
 	}
@@ -617,4 +633,112 @@ func (a *HorizontalController) podInitializationTime(hpa *extensions.HorizontalP
 	}
 
 	return 0.0, fmt.Errorf("Pod is not ready.")
+}
+
+// predictCPUUtilization predicts the future CPU utilization by modelling a
+// linear line of best fit to the data, and then using this line to make
+// predictions into the future.
+//
+// @TODO Should we have other, non-linear methods of prediction? For example
+// quadratic, logarithmic, exponential, etc.
+// @TODO Exactly how do I want to use this line of best-fit? Should I only be
+// using the slope?
+func (a *HorizontalController) predictCPUUtilization(hpa *extensions.HorizontalPodAutoscaler, currentUtilization *int, timestamp time.Time) (*float64, error) {
+	allSeconds, allCPUUtilizations, err := a.parseSecondsAndCPUUtil(hpa)
+	if err != nil {
+		a.eventRecorder.Event(hpa, api.EventTypeWarning, "FailedParseSecsAndCPU", err.Error())
+		return nil, err
+	}
+
+	allSeconds = append(allSeconds, float64(timestamp.Unix()))
+	allCPUUtilizations = append(allCPUUtilizations, float64(*currentUtilization))
+
+	yIntercept, slope, err := a.lineOfBestFit(hpa, allSeconds, allCPUUtilizations)
+	if err != nil {
+		a.eventRecorder.Event(hpa, api.EventTypeWarning, "FailedCalcLineBestFit", err.Error())
+		return nil, err
+	}
+
+	podInitTime, err := a.averagePodInitilizationTime(hpa)
+	if err != nil {
+		a.eventRecorder.Event(hpa, api.EventTypeWarning, "FailedAveragePodInitTime", err.Error())
+		return nil, err
+	}
+
+	futurePredictionTime := float64(timestamp.Unix()) + podInitTime
+	predictedCPUUtilization := *yIntercept + (*slope * futurePredictionTime)
+
+	return &predictedCPUUtilization, nil
+}
+
+// parseSecondsAndCPUUtil parses the previous seconds and cpu utils values
+// recorded in `Annotations` and returns them as separate lists.
+func (a *HorizontalController) parseSecondsAndCPUUtil(hpa *extensions.HorizontalPodAutoscaler) ([]float64, []float64, error) {
+	prevJSONUtils, found := hpa.Annotations[PreviousCPUAnnotationName]
+	if !found {
+		err := fmt.Errorf("There are no previous observations.")
+		a.eventRecorder.Event(hpa, api.EventTypeWarning, "FailedHavingPrevObs", err.Error())
+		return nil, nil, err
+	}
+
+	var prevUtils []map[string]int
+	if err := json.Unmarshal([]byte(prevJSONUtils), &prevUtils); err != nil {
+		a.eventRecorder.Event(hpa, api.EventTypeWarning, "FailedUnmarshallingPrevCPUUtils", err.Error())
+		return nil, nil, err
+	}
+
+	var allSeconds []float64
+	var allCPUUtilizations []float64
+
+	for _, obs := range prevUtils {
+		for obsTime, cpuUtil := range obs {
+			var t time.Time
+			t.UnmarshalJSON([]byte(obsTime))
+
+			allSeconds = append(allSeconds, float64(t.Unix()))
+			allCPUUtilizations = append(allCPUUtilizations, float64(cpuUtil))
+		}
+	}
+
+	return allSeconds, allCPUUtilizations, nil
+}
+
+// lineOfBestFit is a helper method for calculating the line of best fit for cpu
+// utilization. We calculate the slope of this line of best fit
+// using COV_{xy} / VAR_{x}, with the understanding that this is the slope of
+// the line that will minimize the squared verical deviations from said line.
+// http://www.radford.edu/~rsheehy/Gen_flash/Tutorials/Linear_Regression/reg-tut.htm
+func (a *HorizontalController) lineOfBestFit(hpa *extensions.HorizontalPodAutoscaler, allSeconds []float64, allCPUUtilizations []float64) (*float64, *float64, error) {
+	covariance, err := stats.Covariance(allSeconds, allCPUUtilizations)
+	if err != nil {
+		a.eventRecorder.Event(hpa, api.EventTypeWarning, "FailedCovarianceCalc", err.Error())
+		return nil, nil, err
+	}
+
+	secondsVariance, err := stats.Variance(allSeconds)
+	if err != nil {
+		a.eventRecorder.Event(hpa, api.EventTypeWarning, "FailedVarianceCalc", err.Error())
+	}
+
+	if secondsVariance == 0 {
+		a.eventRecorder.Event(hpa, api.EventTypeWarning, "VarianceIsZero", err.Error())
+		return nil, nil, fmt.Errorf("Can't divide by variance if it is 0.")
+	}
+
+	meanSeconds, err := stats.Mean(allSeconds)
+	if err != nil {
+		a.eventRecorder.Event(hpa, api.EventTypeWarning, "FailedCalculateSecondsMean", err.Error())
+		return nil, nil, err
+	}
+
+	meanCPUUtilization, err := stats.Mean(allCPUUtilizations)
+	if err != nil {
+		a.eventRecorder.Event(hpa, api.EventTypeWarning, "FailedCalculateCPUMean", err.Error())
+		return nil, nil, err
+	}
+
+	slope := covariance / secondsVariance
+	yIntercept := meanCPUUtilization - (slope * meanSeconds)
+
+	return &yIntercept, &slope, nil
 }
