@@ -22,8 +22,6 @@ import (
 	"math"
 	"time"
 
-	"github.com/montanaflynn/stats"
-
 	"github.com/golang/glog"
 	"k8s.io/kubernetes/pkg/api"
 	"k8s.io/kubernetes/pkg/api/resource"
@@ -49,15 +47,6 @@ const (
 
 	HpaCustomMetricsTargetAnnotationName = "alpha/target.custom-metrics.podautoscaler.kubernetes.io"
 	HpaCustomMetricsStatusAnnotationName = "alpha/status.custom-metrics.podautoscaler.kubernetes.io"
-
-	// PredictiveAutoscalingAnnotationName must have a value of "true" in
-	// the annotations hash to enable predictive auto-scaling.
-	PredictiveAutoscalingAnnotationName = "predictive"
-
-	// PreviousCPUAnnotationName is the name in which we store a JSON map of
-	// previous CPU utilization observations and the time at which they
-	// occured.
-	PreviousCPUAnnotationName = "previousCPUUtilizations"
 )
 
 type HorizontalController struct {
@@ -438,17 +427,6 @@ func (a *HorizontalController) updateStatus(hpa *extensions.HorizontalPodAutosca
 	return nil
 }
 
-// isPredictive is a helper function for checking if this auto-scaler is
-// functioning in predictive mode. Currently, this variable is set through
-// annotation.
-func isPredictive(hpa *extensions.HorizontalPodAutoscaler) bool {
-	if predAnn, found := hpa.Annotations[PredictiveAutoscalingAnnotationName]; found {
-		return predAnn == "true"
-	}
-
-	return false
-}
-
 // recordCPUUtilization is a helper function to update the annotations list that
 // the `hpa` keeps of previous CPU Utilizations and the times at which they
 // occured. We use this list to calculate a
@@ -457,36 +435,30 @@ func isPredictive(hpa *extensions.HorizontalPodAutoscaler) bool {
 // Because annotations is used for strings, we JSON marshal and unmarshal the
 // values as needed.
 func (a *HorizontalController) recordCPUUtilization(hpa *extensions.HorizontalPodAutoscaler, cpuCurrentUtilization int) error {
-	jsonTime, err := time.Now().MarshalJSON()
+	prevJSONUtils, found := hpa.Annotations[PreviousCPUAnnotationName]
+
+	var prevUtils []map[string]int
+	if !found {
+		prevUtils = []map[string]int{}
+	} else {
+		if err := json.Unmarshal([]byte(prevJSONUtils), &prevUtils); err != nil {
+			a.eventRecorder.Event(hpa, api.EventTypeWarning, "FailedUnmarshallingUtils", err.Error())
+			return err
+		}
+	}
+
+	avgPodInitTime, err := a.averagePodInitilizationTime(hpa)
 	if err != nil {
-		a.eventRecorder.Event(hpa, api.EventTypeWarning, "FailedMarshalingTime", err.Error())
+		a.eventRecorder.Event(hpa, api.EventTypeWarning, "FailedGettingPodInitTime", err.Error())
 		return err
 	}
 
-	observation := map[string]int{string(jsonTime[:]): cpuCurrentUtilization}
-	prevJSONUtils, found := hpa.Annotations[PreviousCPUAnnotationName]
-
-	var updatedUtils []map[string]int
-	if !found {
-		updatedUtils = []map[string]int{observation}
-	} else {
-		var prevUtils []map[string]int
-		if err := json.Unmarshal([]byte(prevJSONUtils), &prevUtils); err != nil {
-			a.eventRecorder.Event(hpa, api.EventTypeWarning, "FailedRecordingCPUUtilization", err.Error())
-			return err
-		}
-
-		prevUtils, err := a.removeOldUtils(hpa, prevUtils)
-		if err != nil {
-			a.eventRecorder.Event(hpa, api.EventTypeWarning, "FailedRemovingOldUtils", err.Error())
-			return err
-		}
-
-		updatedUtils = append(prevUtils, observation)
+	updatedUtils, err := updateUtilizationObservations(cpuCurrentUtilization, prevUtils, avgPodInitTime)
+	if err != nil {
+		a.eventRecorder.Event(hpa, api.EventTypeWarning, "FailedUpdatingUtilsObs", err.Error())
 	}
 
 	jsonUtils, err := json.Marshal(updatedUtils)
-
 	if err != nil {
 		a.eventRecorder.Event(hpa, api.EventTypeWarning, "FailedMarshalingUpdatedCPU", err.Error())
 		return err
@@ -494,69 +466,6 @@ func (a *HorizontalController) recordCPUUtilization(hpa *extensions.HorizontalPo
 
 	writeToHPAAnnotations(hpa, PreviousCPUAnnotationName, string(jsonUtils[:]))
 	return nil
-}
-
-// removeOldUtils removes observations of previous CPU utilizations that are
-// beyond the range we wish to record. The range is `k * PodInitTime`, where k
-// is a constant indicating how many multiples of the AveragePodInitTime in the
-// past we want to record.
-func (a *HorizontalController) removeOldUtils(hpa *extensions.HorizontalPodAutoscaler, prevUtils []map[string]int) ([]map[string]int, error) {
-	k := 1.0
-
-	avgPodInitTime, err := a.averagePodInitilizationTime(hpa)
-	if err != nil {
-		a.eventRecorder.Event(hpa, api.EventTypeWarning, "FailedGettingPodInitTime", err.Error())
-		return nil, err
-	}
-
-	maxDistance := avgPodInitTime * k
-	firstToKeep := 0
-	stop := false
-	var t time.Time
-
-	for i, timeMap := range prevUtils {
-		if stop {
-			break
-		}
-
-		for key := range timeMap {
-			t.UnmarshalJSON([]byte(key))
-
-			// We add new observations to the end, so we are looking
-			// for the first observation within the range we want,
-			// and we are guaranteed that all after it will also be
-			// in the range.
-			if time.Since(t).Seconds() < maxDistance {
-				firstToKeep = i
-				stop = true
-			}
-		}
-	}
-
-	return prevUtils[firstToKeep:], nil
-}
-
-// writeToHPAAnnotations is a wrapper method for writing to `Annotations` of an
-// horizontal pod autoscaler including the check that `Annotations` is not nil
-// first.
-// @TODO This should be combined with `writeToPodAnnotations` so there is one
-// general method that both can call.
-func writeToHPAAnnotations(hpa *extensions.HorizontalPodAutoscaler, key string, value string) {
-	if hpa.Annotations == nil {
-		hpa.Annotations = make(map[string]string)
-	}
-
-	hpa.Annotations[key] = value
-}
-
-// writeToPodAnnotations is same as `writeToHPAAnnotations`, eventually they
-// should be combined.
-func writeToPodAnnotations(pod *api.Pod, key string, value string) {
-	if pod.Annotations == nil {
-		pod.Annotations = make(map[string]string)
-	}
-
-	pod.Annotations[key] = value
 }
 
 // averagePodInitilizationTime returns the average amount of seconds it took for
@@ -584,55 +493,13 @@ func (a *HorizontalController) averagePodInitilizationTime(hpa *extensions.Horiz
 		return 0.0, fmt.Errorf("Failed to list pods for %s: %v", reference, err)
 	}
 
-	totalInitializationTime := 0.0
-	readyPods := 0
-
-	for _, pod := range pods.Items {
-		initTimeForPod, err := a.podInitializationTime(hpa, pod)
-		if err != nil {
-			a.eventRecorder.Event(hpa, api.EventTypeWarning, "FailedInitTimeForPod", err.Error())
-		} else {
-			totalInitializationTime += initTimeForPod
-			readyPods++
-		}
-
+	initTime, err := initTimeForPods(pods.Items)
+	if err != nil {
+		a.eventRecorder.Event(hpa, api.EventTypeWarning, "FailedCalcInitTime", err.Error())
+		return 0.0, err
 	}
 
-	if readyPods == 0 {
-		return 0.0, nil
-	}
-
-	return totalInitializationTime / float64(readyPods), nil
-}
-
-// podInitializationTime calculates for a single pod the amount of time it takes
-// to initialize that pod, either be reading in a previously recording time, or
-// calculating the time and then recording it. The calculation of the
-// initialization time is based on subtracting the time at which the pod
-// was created from the time at which the pod became ready.
-func (a *HorizontalController) podInitializationTime(hpa *extensions.HorizontalPodAutoscaler, pod api.Pod) (float64, error) {
-	podInitializationTimeAnnotationName := "InitializationTime"
-
-	// Only attempt to calculate if the pod is ready.
-	for _, cond := range pod.Status.Conditions {
-		if cond.Type == api.PodReady {
-			initTime, found := pod.Annotations[podInitializationTimeAnnotationName]
-			if !found {
-				initTime = cond.LastTransitionTime.Time.Sub(pod.CreationTimestamp.Time).String()
-				writeToPodAnnotations(&pod, podInitializationTimeAnnotationName, initTime)
-			}
-
-			initDuration, err := time.ParseDuration(initTime)
-			if err != nil {
-				a.eventRecorder.Event(hpa, api.EventTypeWarning, "FailedParsingPodInitTime", err.Error())
-				return 0.0, err
-			}
-
-			return initDuration.Seconds(), nil
-		}
-	}
-
-	return 0.0, fmt.Errorf("Pod is not ready.")
+	return initTime, nil
 }
 
 // predictCPUUtilization predicts the future CPU utilization by modelling a
@@ -653,7 +520,7 @@ func (a *HorizontalController) predictCPUUtilization(hpa *extensions.HorizontalP
 	allSeconds = append(allSeconds, float64(timestamp.Unix()))
 	allCPUUtilizations = append(allCPUUtilizations, float64(*currentUtilization))
 
-	yIntercept, slope, err := a.lineOfBestFit(hpa, allSeconds, allCPUUtilizations)
+	yIntercept, slope, err := lineOfBestFit(allSeconds, allCPUUtilizations)
 	if err != nil {
 		a.eventRecorder.Event(hpa, api.EventTypeWarning, "FailedCalcLineBestFit", err.Error())
 		return nil, err
@@ -665,8 +532,7 @@ func (a *HorizontalController) predictCPUUtilization(hpa *extensions.HorizontalP
 		return nil, err
 	}
 
-	futurePredictionTime := float64(timestamp.Unix()) + podInitTime
-	predictedCPUUtilization := *yIntercept + (*slope * futurePredictionTime)
+	predictedCPUUtilization := predictFutureCPUFromBestFit(podInitTime, float64(timestamp.Unix()), *yIntercept, *slope)
 
 	return &predictedCPUUtilization, nil
 }
@@ -687,58 +553,6 @@ func (a *HorizontalController) parseSecondsAndCPUUtil(hpa *extensions.Horizontal
 		return nil, nil, err
 	}
 
-	var allSeconds []float64
-	var allCPUUtilizations []float64
-
-	for _, obs := range prevUtils {
-		for obsTime, cpuUtil := range obs {
-			var t time.Time
-			t.UnmarshalJSON([]byte(obsTime))
-
-			allSeconds = append(allSeconds, float64(t.Unix()))
-			allCPUUtilizations = append(allCPUUtilizations, float64(cpuUtil))
-		}
-	}
-
+	allSeconds, allCPUUtilizations := getSecondsAndCPULists(prevUtils)
 	return allSeconds, allCPUUtilizations, nil
-}
-
-// lineOfBestFit is a helper method for calculating the line of best fit for cpu
-// utilization. We calculate the slope of this line of best fit
-// using COV_{xy} / VAR_{x}, with the understanding that this is the slope of
-// the line that will minimize the squared verical deviations from said line.
-// http://www.radford.edu/~rsheehy/Gen_flash/Tutorials/Linear_Regression/reg-tut.htm
-func (a *HorizontalController) lineOfBestFit(hpa *extensions.HorizontalPodAutoscaler, allSeconds []float64, allCPUUtilizations []float64) (*float64, *float64, error) {
-	covariance, err := stats.Covariance(allSeconds, allCPUUtilizations)
-	if err != nil {
-		a.eventRecorder.Event(hpa, api.EventTypeWarning, "FailedCovarianceCalc", err.Error())
-		return nil, nil, err
-	}
-
-	secondsVariance, err := stats.Variance(allSeconds)
-	if err != nil {
-		a.eventRecorder.Event(hpa, api.EventTypeWarning, "FailedVarianceCalc", err.Error())
-	}
-
-	if secondsVariance == 0 {
-		a.eventRecorder.Event(hpa, api.EventTypeWarning, "VarianceIsZero", err.Error())
-		return nil, nil, fmt.Errorf("Can't divide by variance if it is 0.")
-	}
-
-	meanSeconds, err := stats.Mean(allSeconds)
-	if err != nil {
-		a.eventRecorder.Event(hpa, api.EventTypeWarning, "FailedCalculateSecondsMean", err.Error())
-		return nil, nil, err
-	}
-
-	meanCPUUtilization, err := stats.Mean(allCPUUtilizations)
-	if err != nil {
-		a.eventRecorder.Event(hpa, api.EventTypeWarning, "FailedCalculateCPUMean", err.Error())
-		return nil, nil, err
-	}
-
-	slope := covariance / secondsVariance
-	yIntercept := meanCPUUtilization - (slope * meanSeconds)
-
-	return &yIntercept, &slope, nil
 }
