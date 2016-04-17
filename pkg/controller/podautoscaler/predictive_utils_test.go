@@ -34,7 +34,10 @@ func TestUpdateUtilizationObservationsNoPrevious(t *testing.T) {
 	previousObs := []map[string]int{}
 	podInit := 5.0
 
-	recordedObs, err := updateUtilizationObservations(cpuUtil, previousObs, podInit)
+	currentTime, err := time.Now().MarshalJSON()
+	assert.Nil(t, err)
+
+	recordedObs, err := updateUtilizationObservations(cpuUtil, string(currentTime[:]), previousObs, podInit)
 	assert.Nil(t, err)
 
 	assert.Equal(t, len(recordedObs), 1, "Should have added one observation.")
@@ -46,7 +49,7 @@ func TestUpdateUtilizationObservationsNoPrevious(t *testing.T) {
 
 func TestUpdateUtilizationObservationsOnePrevious(t *testing.T) {
 	// Start with one previous observation.
-	timeNow, err := time.Now().MarshalJSON()
+	timeNow, err := time.Now().Add(-5 * time.Second).MarshalJSON()
 	assert.Nil(t, err)
 
 	previousObs := []map[string]int{{string(timeNow[:]): 50}}
@@ -54,7 +57,10 @@ func TestUpdateUtilizationObservationsOnePrevious(t *testing.T) {
 	cpuUtil := 70
 	podInit := 5.0
 
-	recordedObs, err := updateUtilizationObservations(cpuUtil, previousObs, podInit)
+	currentTime, err := time.Now().MarshalJSON()
+	assert.Nil(t, err)
+
+	recordedObs, err := updateUtilizationObservations(cpuUtil, string(currentTime[:]), previousObs, podInit)
 	assert.Nil(t, err)
 
 	assert.Equal(t, len(recordedObs), 2, "Should have a total of two observations.")
@@ -71,7 +77,10 @@ func TestUpdateUtilizationsObservationsRemoveAllPrevious(t *testing.T) {
 	cpuUtil := 70
 	podInit := 5.0
 
-	recordedObs, err := updateUtilizationObservations(cpuUtil, previousObs, podInit)
+	currentTime, err := time.Now().MarshalJSON()
+	assert.Nil(t, err)
+
+	recordedObs, err := updateUtilizationObservations(cpuUtil, string(currentTime[:]), previousObs, podInit)
 	assert.Nil(t, err)
 
 	assert.Equal(t, len(recordedObs), 1, "Only one observation should remain.")
@@ -94,10 +103,36 @@ func TestUpdateUtilizationsObservationsRemoveSomePrevious(t *testing.T) {
 	cpuUtil := 70
 	podInit := 5.0
 
-	recordedObs, err := updateUtilizationObservations(cpuUtil, previousObs, podInit)
+	currentTime, err := time.Now().MarshalJSON()
+	assert.Nil(t, err)
+
+	recordedObs, err := updateUtilizationObservations(cpuUtil, string(currentTime[:]), previousObs, podInit)
 	assert.Nil(t, err)
 
 	assert.Equal(t, len(recordedObs), 2, "Only one observation should be removed.")
+}
+
+// TestUpdateUtilizationsObservationsRemoveReplicas tests that we do not
+// write any observations that are direct replicas of what we previously
+// recorded.
+func TestUpdateUtilizationsObservationsRemoveReplicas(t *testing.T) {
+	oldTime, err := time.Now().Add(-1 * time.Minute).MarshalJSON()
+	assert.Nil(t, err)
+
+	replicaTime := oldTime
+
+	cpuUtil := 70
+	podInit := 5.0
+
+	previousObs := []map[string]int{
+		{string(oldTime[:]): 50},
+	}
+
+	recordedObs, err := updateUtilizationObservations(cpuUtil, string(replicaTime[:]), previousObs, podInit)
+	assert.Nil(t, err)
+
+	assert.Equal(t, len(recordedObs), 1, "Should not make a duplicate observation.")
+
 }
 
 func TestInitTimeForPods(t *testing.T) {

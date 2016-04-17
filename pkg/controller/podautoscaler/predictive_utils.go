@@ -57,26 +57,49 @@ func isPredictive(hpa *extensions.HorizontalPodAutoscaler) bool {
 // observations, and the pod initialization time and adds the current
 // observation to the previous observations to return the observations that
 // should be recorded in the auto-scaler object.
-func updateUtilizationObservations(cpuCurrentUtilization int, previousObservations []map[string]int, podInitTime float64) ([]map[string]int, error) {
-	jsonTime, err := time.Now().MarshalJSON()
-	if err != nil {
-		return nil, err
+func updateUtilizationObservations(cpuCurrentUtilization int, jsonTime string, previousObservations []map[string]int, podInitTime float64) ([]map[string]int, error) {
+	observation := map[string]int{jsonTime: cpuCurrentUtilization}
+
+	// Do not add replica observations.
+	if isReplicaObservation(previousObservations, jsonTime) {
+		return previousObservations, nil
 	}
 
-	observation := map[string]int{string(jsonTime[:]): cpuCurrentUtilization}
 	previousObservations = removeOldUtils(previousObservations, podInitTime)
 
 	updatedObservations := append(previousObservations, observation)
 	return updatedObservations, nil
 }
 
+// isReplicaObservation tests if this observation is going to return within a
+// certain time of the last made observation, ensuring that we are only making
+// observations every couple of seconds.
+func isReplicaObservation(previousObservations []map[string]int, jsonTime string) bool {
+	timeThresholdSeconds := 5.0
+
+	if len(previousObservations) > 0 {
+		lastObservation := previousObservations[len(previousObservations)-1]
+
+		var lastObsT time.Time
+		var newObsT time.Time
+		for key := range lastObservation {
+			lastObsT.UnmarshalJSON([]byte(key))
+		}
+		newObsT.UnmarshalJSON([]byte(jsonTime))
+
+		if newObsT.Sub(lastObsT).Seconds() < timeThresholdSeconds {
+			return true
+		}
+	}
+
+	return false
+}
+
 // removeOldUtils removes any previous CPU observations that we no longer wish
 // to record.
 func removeOldUtils(previousObservations []map[string]int, podInitTime float64) []map[string]int {
 	k := 20.0
-	// Don't predict on more than 10 minutes - given a 30 second sync
-	// period, this is a maximum of 20 stored observations.
-	maxDistance := math.Min(podInitTime*k, 60.0*10.0)
+	maxDistance := math.Min(podInitTime*k, 60.0*3.0)
 	firstToKeep := -1
 	stop := false
 	var t time.Time
@@ -115,12 +138,10 @@ func initTimeForPods(pods []api.Pod) (float64, error) {
 
 	for _, pod := range pods {
 		pit, err := initTimeForPod(pod)
-		if err != nil {
-			return 0.0, err
+		if err == nil {
+			totalInitializationTime += pit
+			readyPods++
 		}
-
-		totalInitializationTime += pit
-		readyPods++
 	}
 
 	if readyPods == 0 {

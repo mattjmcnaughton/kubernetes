@@ -166,6 +166,9 @@ func (a *HorizontalController) computeReplicasForCPUUtilization(hpa *extensions.
 			a.eventRecorder.Event(hpa, api.EventTypeWarning, "ErrorAutoscalingPredictively", err.Error())
 		} else {
 			usageRatio = *predictedUtilization / float64(targetUtilization)
+
+			eventDesc := fmt.Sprintf("Predictive calcuation resulted in usageRatio: %v", usageRatio)
+			a.eventRecorder.Event(hpa, api.EventTypeNormal, "UsingPrediction", eventDesc)
 		}
 	}
 
@@ -389,6 +392,9 @@ func (a *HorizontalController) updateCurrentReplicasInStatus(hpa *extensions.Hor
 }
 
 func (a *HorizontalController) updateStatus(hpa *extensions.HorizontalPodAutoscaler, currentReplicas, desiredReplicas int, cpuCurrentUtilization *int, cmStatus string, rescale bool) error {
+	eventTypeNormalStr := fmt.Sprintf("Scaled at time: %v", time.Now().String())
+	a.eventRecorder.Event(hpa, api.EventTypeNormal, "CallingUpdatingStatus", eventTypeNormalStr)
+
 	hpa.Status = extensions.HorizontalPodAutoscalerStatus{
 		CurrentReplicas:                 currentReplicas,
 		DesiredReplicas:                 desiredReplicas,
@@ -453,7 +459,11 @@ func (a *HorizontalController) recordCPUUtilization(hpa *extensions.HorizontalPo
 		return err
 	}
 
-	updatedUtils, err := updateUtilizationObservations(cpuCurrentUtilization, prevUtils, avgPodInitTime)
+	jsonTime, err := time.Now().MarshalJSON()
+	if err != nil {
+		return err
+	}
+	updatedUtils, err := updateUtilizationObservations(cpuCurrentUtilization, string(jsonTime[:]), prevUtils, avgPodInitTime)
 	if err != nil {
 		a.eventRecorder.Event(hpa, api.EventTypeWarning, "FailedUpdatingUtilsObs", err.Error())
 	}
@@ -532,7 +542,22 @@ func (a *HorizontalController) predictCPUUtilization(hpa *extensions.HorizontalP
 		return nil, err
 	}
 
-	predictedCPUUtilization := predictFutureCPUFromBestFit(podInitTime, float64(timestamp.Unix()), *yIntercept, *slope)
+	var predictedCPUUtilization float64
+	if *slope < 0.0 {
+		// If we are downscaling, then we do not need to predict pod
+		// initialization time into the future, because it is a much
+		// faster process to spin pods down. But we don't know if we are
+		// downscaling until we calculate the scope so we still have to
+		// go through the process.
+		predictedCPUUtilization = float64(*currentUtilization)
+	} else {
+		predictedCPUUtilization = predictFutureCPUFromBestFit(podInitTime, float64(timestamp.Unix()), *yIntercept, *slope)
+	}
+
+	// Log the pod initialization time, predictedCPUUtilization, allSeconds,
+	// allCPUUtilizations, slope, and y-intercept.
+	predInfo := fmt.Sprintf("Predictively auto-scaled with pit: %v, predictedCPU: %v, allSeconds: %v, allCPUUtilizations: %v, slope: %v, y-intercept: %v", podInitTime, predictedCPUUtilization, allSeconds, allCPUUtilizations, *slope, *yIntercept)
+	a.eventRecorder.Event(hpa, api.EventTypeWarning, "PredictiveAutoscalingInfo", predInfo)
 
 	return &predictedCPUUtilization, nil
 }
